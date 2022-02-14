@@ -1,6 +1,6 @@
 ---
 title: "Part 1"
-author: "YOUR NAME"
+author: "Alexis Kwan"
 output: 
   html_document:
     code_folding: hide
@@ -12,10 +12,9 @@ output:
 knitr::opts_chunk$set(echo = FALSE, warning = FALSE)
 library(tidyverse)
 library(lubridate)
-
 ```
 
-Template file. Code will be included in folded blocks in the output to facilitate grading. Please knit this file and commit both the rmd and the html output. If you add external files to your analysis, please commit them to the files folder in this repository. NOTE: please do not commit large (15MB+) files to GitHub. Instead please denote the origin of the files in your code. 
+## Section A
 
 ```{r}
 #example connection to database. note that you have to download the database from onedrive
@@ -106,6 +105,8 @@ Here we note a sharp difference in the shapes of the distribution of the assessm
 
 As the University of Chicago analysts note, the typical way to examine fairness of assessments is through the ratios of the assessed values divided by the sales price.
 
+## Section B
+
 ```{r}
 library(cmfproperty)
 library(lubridate)
@@ -124,10 +125,96 @@ ratios =
 ratios
 ```
 
-
 ```{r}
-cmfproperty::make_report(ratios, 
-                         jurisdiction_name = "Cook County, Illinois",
-                         output_dir = "~/../Documents/GitHub/cmf-uchicago.github.io/") 
+stats = calc_iaao_stats(ratios)
+stats
 ```
 
+
+```{r}
+min_reporting_yr = 2012
+max_reporting_yr = 2020
+jurisdiction_name = "Detroit"
+```
+
+```{r}
+d_plots = diagnostic_plots(stats, ratios, min_reporting_yr, max_reporting_yr)
+```
+
+```{r}
+gridExtra::grid.arrange(d_plots[[2]],
+                        d_plots[[3]],
+                        d_plots[[4]],
+                        d_plots[[5]],
+                        ncol = 2,
+                        nrow = 2)
+```
+
+Looking at the various trends in sales ratios over time we see that, no matter how expensive the property is, the sales ratio and the assessed value decreases over time, while the actual sales price increases, especially from 2016 onwards.
+
+## Section C
+
+```{r}
+df = 
+  joined %>%
+  collect() %>%
+  filter(str_detect(sale_terms, regex("VALID ARMS LENGTH", ignore_case = TRUE)))
+```
+
+```{r}
+df %>%
+  group_by(propclass) %>%
+  count()
+```
+
+```{r}
+sales_lm = lm(formula = sale_price ~ property_c, data = df)
+
+summary(sales_lm)
+```
+
+```{r}
+sales_lm = lm(formula = sale_price ~ ASSESSEDVALUE, data = df)
+
+summary(sales_lm)
+```
+
+```{r}
+sales_lm = lm(formula = sale_price ~ property_c + ASSESSEDVALUE + year, data = df)
+
+summary(sales_lm)
+```
+
+We see from regressions that using what we would intuitively associate with higher property values, like assessed value and property are statistically significant predictors of sales. 
+
+## Section D
+
+```{r}
+df = 
+  joined %>%
+  collect()
+
+df =
+  df %>%
+  mutate(foreclosed = str_detect(sale_terms, regex("VALID ARMS LENGTH", ignore_case = TRUE)))
+
+df
+```
+
+```{r}
+fc_glm = glm(foreclosed ~ property_c + ASSESSEDVALUE + year, data = df)
+
+summary(fc_glm)
+```
+
+With foreclosures, the same factors seems similarly predictive, but with an inverse relationship with property class. It seems the lower, in number, the property class is, the more likely the property will be foreclosed.
+
+```{r}
+fc_glm = glm(foreclosed ~ property_c + ASSESSEDVALUE + year, 
+             data = df %>% 
+               mutate(property_c = as.factor(property_c)))
+
+summary(fc_glm)
+```
+
+Before we assumed that property class could be taken an an ordinal, however if we properly treat it as a categorical variable we see that two classes in particular are associated with foreclosure. Those classes are converted residences and residential renter zones.
