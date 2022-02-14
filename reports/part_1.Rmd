@@ -1,6 +1,6 @@
 ---
 title: "Part 1"
-author: "YOUR NAME"
+author: "Alexis Kwan"
 output: 
   html_document:
     code_folding: hide
@@ -12,15 +12,14 @@ output:
 knitr::opts_chunk$set(echo = FALSE, warning = FALSE)
 library(tidyverse)
 library(lubridate)
-
 ```
 
-Template file. Code will be included in folded blocks in the output to facilitate grading. Please knit this file and commit both the rmd and the html output. If you add external files to your analysis, please commit them to the files folder in this repository. NOTE: please do not commit large (15MB+) files to GitHub. Instead please denote the origin of the files in your code. 
+## Section A
 
 ```{r}
 #example connection to database. note that you have to download the database from onedrive
 
-con <- DBI::dbConnect(RSQLite::SQLite(), "database/detroit.sqlite")
+con <- DBI::dbConnect(RSQLite::SQLite(), "../database/detroit.sqlite")
 
 # sales tbl
 
@@ -37,4 +36,185 @@ dplyr::tbl(con, 'sales') %>% count(year(sale_date))
 
 ```
 
+```{r}
+dplyr::tbl(con, 'assessments')
+```
 
+```{r}
+joined = 
+  dplyr::tbl(con, 'sales') %>%
+  inner_join(dplyr::tbl(con, 'assessments'), by = c('parcel_num'='PARCELNO'))
+
+joined
+```
+
+```{r}
+joined %>%
+  filter(sale_price < 1000) %>%
+  ggplot(aes(x = sale_price)) +
+  geom_histogram()
+```
+
+```{r}
+joined %>%
+  filter(sale_price < 1000) %>%
+  ggplot(aes(x = ASSESSEDVALUE)) +
+  geom_histogram()
+```
+
+```{r}
+joined %>%
+  group_by(sale_terms) %>%
+  count() %>% 
+  arrange(desc(n))
+```
+
+```{r}
+joined %>%
+  filter(sale_terms %in% c('NO CONSIDERATION', 'EXEMPT/GOVT')) %>%
+  ggplot(aes(x = ASSESSEDVALUE)) +
+  geom_boxplot() + 
+  xlim(0, 40000) 
+```
+
+As we can see from the histogram above, there are many properties sold at strange values, like at 0 or 1 dollar. This could have been a part of some revitalization program where property is sold cheaply to residents or reclaimed by the city, as evidenced by the grantor being some government entity like *CITY OF DETROIT* and sale terms like *EXEMPT/GOVT* but there isn't enough information confirm the strange values. The is true of assessed values as well. What does it mean for a property to have a zero assessed value? Considering that even "arm's length" transactions have this issue, there appears to be a potential data ingestion issue.
+
+```{r}
+joined %>%  
+  collect() %>%
+  filter(str_detect(sale_terms, regex("VALID ARMS LENGTH", ignore_case = TRUE))) %>%
+  filter(sale_price < 1000) %>%
+  ggplot(aes(x = ASSESSEDVALUE)) +
+  geom_histogram()
+```
+
+But according to the definition of the various sales terms, only "arm's length" sales are supposedly representative of the market. So we will examine only those. For the sake of simplicity let's restrict the data to the valuations to the lower half first initial inspection.
+
+```{r}
+joined %>%
+  collect() %>%
+  filter(str_detect(sale_terms, regex("VALID ARMS LENGTH", ignore_case = TRUE))) %>%
+  filter(ASSESSEDVALUE > 4000 & ASSESSEDVALUE < 20000) %>%
+  pivot_longer(cols = c('sale_price','ASSESSEDVALUE'), names_to = "type", values_to = "value") %>%
+  ggplot(aes(x=value, fill=type)) +
+  geom_histogram(alpha=0.5, position = 'identity', binwidth = 1000) +
+  xlim(0, 100000)
+```
+
+Here we note a sharp difference in the shapes of the distribution of the assessment values versus actual sale values. Also, strangely, there appears to be a sharp cutoff around $\$20,000$ in the assessed values samples.
+
+As the University of Chicago analysts note, the typical way to examine fairness of assessments is through the ratios of the assessed values divided by the sales price.
+
+## Section B
+
+```{r}
+library(cmfproperty)
+library(lubridate)
+
+ratios =
+  cmfproperty::reformat_data(
+    joined %>%
+      collect() %>%
+      filter(str_detect(sale_terms, regex("VALID ARMS LENGTH", ignore_case = TRUE))) %>%
+      mutate(sale_year = year(ymd(sale_date))),
+    sale_col = "sale_price",
+    assessment_col = "ASSESSEDVALUE",
+    sale_year_col = "sale_year",
+  )
+
+ratios
+```
+
+```{r}
+stats = calc_iaao_stats(ratios)
+stats
+```
+
+
+```{r}
+min_reporting_yr = 2012
+max_reporting_yr = 2020
+jurisdiction_name = "Detroit"
+```
+
+```{r}
+d_plots = diagnostic_plots(stats, ratios, min_reporting_yr, max_reporting_yr)
+```
+
+```{r}
+gridExtra::grid.arrange(d_plots[[2]],
+                        d_plots[[3]],
+                        d_plots[[4]],
+                        d_plots[[5]],
+                        ncol = 2,
+                        nrow = 2)
+```
+
+Looking at the various trends in sales ratios over time we see that, no matter how expensive the property is, the sales ratio and the assessed value decreases over time, while the actual sales price increases, especially from 2016 onwards.
+
+## Section C
+
+```{r}
+df = 
+  joined %>%
+  collect() %>%
+  filter(str_detect(sale_terms, regex("VALID ARMS LENGTH", ignore_case = TRUE)))
+```
+
+```{r}
+df %>%
+  group_by(propclass) %>%
+  count()
+```
+
+```{r}
+sales_lm = lm(formula = sale_price ~ property_c, data = df)
+
+summary(sales_lm)
+```
+
+```{r}
+sales_lm = lm(formula = sale_price ~ ASSESSEDVALUE, data = df)
+
+summary(sales_lm)
+```
+
+```{r}
+sales_lm = lm(formula = sale_price ~ property_c + ASSESSEDVALUE + year, data = df)
+
+summary(sales_lm)
+```
+
+We see from regressions that using what we would intuitively associate with higher property values, like assessed value and property are statistically significant predictors of sales. 
+
+## Section D
+
+```{r}
+df = 
+  joined %>%
+  collect()
+
+df =
+  df %>%
+  mutate(foreclosed = str_detect(sale_terms, regex("VALID ARMS LENGTH", ignore_case = TRUE)))
+
+df
+```
+
+```{r}
+fc_glm = glm(foreclosed ~ property_c + ASSESSEDVALUE + year, data = df)
+
+summary(fc_glm)
+```
+
+With foreclosures, the same factors seems similarly predictive, but with an inverse relationship with property class. It seems the lower, in number, the property class is, the more likely the property will be foreclosed.
+
+```{r}
+fc_glm = glm(foreclosed ~ property_c + ASSESSEDVALUE + year, 
+             data = df %>% 
+               mutate(property_c = as.factor(property_c)))
+
+summary(fc_glm)
+```
+
+Before we assumed that property class could be taken an an ordinal, however if we properly treat it as a categorical variable we see that two classes in particular are associated with foreclosure. Those classes are converted residences and residential renter zones.
